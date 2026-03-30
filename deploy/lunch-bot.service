@@ -1,0 +1,15 @@
+[Unit]
+Description=Telegram Lunch Bot
+After=network.target
+
+[Service]
+Type=simple
+User=lunchbot
+WorkingDirectory=/opt/lunch-bot
+EnvironmentFile=/opt/lunch-bot/.env
+ExecStart=/opt/lunch-bot/venv/bin/python main.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
