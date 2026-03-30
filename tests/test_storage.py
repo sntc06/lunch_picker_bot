@@ -53,7 +53,7 @@ restaurant_entry_strategy = st.fixed_dictionaries({
     "added_at": iso8601_strategy,
 })
 
-restaurant_list_strategy = st.lists(restaurant_entry_strategy, max_size=20)
+restaurant_list_strategy = st.lists(restaurant_entry_strategy, max_size=50)
 
 
 # ---------------------------------------------------------------------------

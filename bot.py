@@ -13,7 +13,6 @@ import storage
 logger = logging.getLogger(__name__)
 
 TZ_TAIPEI = timezone(timedelta(hours=8))
-MAX_RESTAURANTS = 20
 
 REMOVEALL_YES_DATA = "removeall:yes"
 REMOVEALL_NO_DATA = "removeall:no"
@@ -40,11 +39,6 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             # Reject names containing newline or forward slash
             if "\n" in name or "/" in name:
                 reply_lines.append(messages.ADD_INVALID_NAME.format(name=name))
-                continue
-
-            # Check list capacity
-            if len(restaurants) >= MAX_RESTAURANTS:
-                reply_lines.append(messages.ADD_LIST_FULL.format(name=name))
                 continue
 
             # Case-insensitive duplicate check

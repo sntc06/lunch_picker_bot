@@ -5,7 +5,6 @@ ADD_SUCCESS = "✅ 已新增餐廳：{name}"
 ADD_DUPLICATE = "⚠️ 「{name}」已在清單中了。"
 ADD_USAGE = "用法：/add <餐廳名稱> [餐廳名稱2 ...] 使用空格分隔"
 ADD_INVALID_NAME = "⚠️ 餐廳名稱格式不正確，名稱不可包含換行或斜線：{name}"
-ADD_LIST_FULL = "⚠️ 清單已達上限（最多 20 間），無法新增「{name}」。"
 
 REMOVE_SUCCESS = "✅ 已移除餐廳：{name}"
 REMOVE_NOT_FOUND = "⚠️ 找不到「{name}」，請確認名稱是否正確。"
