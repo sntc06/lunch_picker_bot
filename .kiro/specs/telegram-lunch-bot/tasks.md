@@ -16,20 +16,20 @@ Property numbers below match the Correctness Properties section of `design.md` (
   - No Simplified Chinese characters; use Taiwan-region phrasing
   - _Requirements: 1.4, 1.6, 2a.1, 2a.2, 2a.3, 2a.4, 7.1, 7.2, 7.3_
 
-- [ ] 2. Update `config.py` with environment variable loading (token, data file, no-repeat toggle)
+- [x] 2. Update `config.py` with environment variable loading (token, data file, no-repeat toggle)
   - [x] 2.1 Implement core config loading using `python-dotenv`
     - Read `BOT_TOKEN` (required) and `DATA_FILE` (default: `data/restaurants.json`) from env / `.env`
     - Raise `RuntimeError` with a descriptive message if `BOT_TOKEN` is missing
     - _Requirements: 8.5, 6.1_
 
-  - [ ] 2.2 Add `PREVIOUS_ROLL_FILE` and `NO_REPEAT` configuration
+  - [x] 2.2 Add `PREVIOUS_ROLL_FILE` and `NO_REPEAT` configuration
     - Read `PREVIOUS_ROLL_FILE` from env; default to `previous_roll.json` in the same directory as `DATA_FILE`
     - Parse `NO_REPEAT` into a boolean constant using a truthy/falsy convention (`1/true/yes/on` → enabled, `0/false/no/off` → disabled, case-insensitive); default to `True` when absent; fall back to the default for unrecognised values rather than failing startup
     - Read once at startup; value is constant for the process lifetime (no runtime mutation path)
     - Factor the parsing into a small pure helper (e.g. `parse_no_repeat(value: str | None) -> bool`) so it can be property-tested
     - _Requirements: 3a.1, 3a.2, 5.3_
 
-  - [ ]* 2.3 Write property test for No_Repeat_Toggle parsing and default (Property 10)
+  - [x] 2.3 Write property test for No_Repeat_Toggle parsing and default (Property 10)
     - **Property 10: No_Repeat_Toggle parsing and default**
     - **Validates: Requirements 3a.1**
     - For any input string, assert `parse_no_repeat` matches the truthy/falsy convention; assert an absent value defaults to enabled (`True`)
@@ -47,7 +47,7 @@ Property numbers below match the Correctness Properties section of `design.md` (
     - Return empty list when file does not exist or `chat_id` is absent
     - _Requirements: 5.1, 5.2_
 
-  - [ ] 3.2 Implement `load_previous_roll(chat_id) -> str | None` and `save_previous_roll(chat_id, name: str) -> None`
+  - [x] 3.2 Implement `load_previous_roll(chat_id) -> str | None` and `save_previous_roll(chat_id, name: str) -> None`
     - Persist per-chat previous roll results in a separate `PREVIOUS_ROLL_FILE` (keyed by `chat_id`), leaving `restaurants.json` format untouched (no migration)
     - Use the same atomic write-then-rename helper as the restaurant list
     - Store the name in lowercase form (consistent with restaurant-name storage) for reliable membership comparison
@@ -74,8 +74,8 @@ Property numbers below match the Correctness Properties section of `design.md` (
     - Assert `load_previous_roll` returns `None` for any chat when `PREVIOUS_ROLL_FILE` does not exist
     - _Requirements: 3a.5, 5.3_
 
-- [ ] 4. Implement the pure roll selection helper
-  - [ ] 4.1 Implement `select_roll(restaurants, previous, no_repeat) -> entry`
+- [x] 4. Implement the pure roll selection helper
+  - [x] 4.1 Implement `select_roll(restaurants, previous, no_repeat) -> entry`
     - Pure function with no Telegram or storage I/O, so it can be tested directly
     - If `no_repeat` is disabled → select uniformly at random from the entire list
     - If `no_repeat` is enabled: single-restaurant list → return that restaurant; `previous` is `None` or not present in the list → select uniformly from the entire list; otherwise → select uniformly from the list excluding the entry whose name equals `previous`
@@ -141,7 +141,7 @@ Property numbers below match the Correctness Properties section of `design.md` (
     - Catch storage exceptions, log error, reply STORAGE_ERROR
     - _Requirements: 2a.1, 2a.2, 2a.3, 2a.4, 5.2, 6.1_
 
-  - [ ] 5.6 Update `cmd_roll` handler to use the no-repeat-aware selection logic
+  - [x] 5.6 Update `cmd_roll` handler to use the no-repeat-aware selection logic
     - Load list; guard empty (reply ROLL_EMPTY)
     - Load `Previous_Roll_Result` via `storage.load_previous_roll(chat_id)`
     - Select using `select_roll(restaurants, previous, config.NO_REPEAT)` (read the toggle from `config.NO_REPEAT` only)
@@ -167,8 +167,8 @@ Property numbers below match the Correctness Properties section of `design.md` (
 - [ ] 6. Checkpoint — ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 7. Wire everything together in `main.py`
-  - [ ] 7.1 Wire config → storage → bot handlers → `Application.run_polling()`
+- [x] 7. Wire everything together in `main.py`
+  - [x] 7.1 Wire config → storage → bot handlers → `Application.run_polling()`
     - Import `config`; register all command handlers and the `CallbackQueryHandler` for `cmd_removeall` on the `Application`
     - Ensure the no-repeat-aware `cmd_roll` and the previous-roll storage are loaded on startup so duplicate-avoidance applies after a restart
     - Configure `logging` to stdout so systemd/journald captures output

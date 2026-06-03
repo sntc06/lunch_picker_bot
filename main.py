@@ -1,15 +1,34 @@
-"""main.py — Entry point for the Telegram Lunch Bot."""
+"""main.py — Entry point for the Telegram Lunch Bot.
+
+Wires config → storage → bot handlers → ``Application.run_polling()``.
+
+Logging is sent to stdout so that, when the bot runs under systemd, the
+output is captured by journald and is viewable with ``journalctl -u
+lunch-bot`` (Req 8.4). Importing ``config`` at startup also triggers the
+``BOT_TOKEN`` validation, so a missing token fails fast before any network
+call (Req 8.5).
+
+The ``/roll`` no-repeat behaviour survives restarts automatically: the
+previous roll result is persisted per chat to disk and re-read on each
+``/roll`` via ``storage.load_previous_roll`` (Req 3a.9), so no in-memory
+startup load is required.
+"""
 
 import logging
+import sys
 
 from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 import config
 import bot
 
+# Direct logs to stdout (not the default stderr) so systemd/journald captures
+# operational output (Req 8.4). INFO keeps routine operational logs while the
+# handlers' logger.exception calls (ERROR level) are always recorded.
 logging.basicConfig(
-    level=logging.WARNING,
+    level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 
 if __name__ == "__main__":

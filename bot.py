@@ -7,6 +7,7 @@ from datetime import datetime, timezone, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
+import config
 import messages
 import storage
 
@@ -16,6 +17,51 @@ TZ_TAIPEI = timezone(timedelta(hours=8))
 
 REMOVEALL_YES_DATA = "removeall:yes"
 REMOVEALL_NO_DATA = "removeall:no"
+
+
+def select_roll(restaurants: list[dict], previous: str | None, no_repeat: bool) -> dict:
+    """Pure helper that selects one restaurant entry from *restaurants*.
+
+    This contains the no-repeat-aware selection logic for ``/roll`` with no
+    Telegram or storage I/O, so it can be property-tested directly.
+
+    Args:
+        restaurants: non-empty list of restaurant dicts (each with ``name``,
+            ``added_by``, ``added_at``). Not mutated.
+        previous: the chat's ``Previous_Roll_Result`` — a lowercase name
+            string (as stored by ``storage.save_previous_roll``) or ``None``.
+        no_repeat: the ``No_Repeat_Toggle`` value.
+
+    Returns:
+        A single restaurant entry (dict) drawn from *restaurants*.
+
+    Selection rules (Req 3.1, 3.3, 3a.3–3a.7):
+      - ``no_repeat`` disabled → choose uniformly from the entire list.
+      - ``no_repeat`` enabled:
+          * single-restaurant list → return that restaurant (Req 3a.4);
+          * ``previous`` is ``None`` or not present in the list → choose
+            uniformly from the entire list (Req 3a.5, 3a.6);
+          * otherwise → choose uniformly from the list excluding the entry
+            whose name equals ``previous`` (case-insensitive) (Req 3a.3).
+
+    The candidate list is built exactly once and ``random.choice`` is called
+    exactly once — no rejection-sampling loop — guaranteeing bounded
+    selection (Req 3a.11).
+    """
+    if no_repeat:
+        # Exclude the previous result (compared case-insensitively, since
+        # `previous` is already lowercase). If nothing remains — e.g. a
+        # single-restaurant list, or `previous` is None/not present — fall
+        # back to the full list so the candidate set is never empty.
+        candidates = [
+            entry for entry in restaurants if entry["name"].lower() != previous
+        ]
+        if not candidates:
+            candidates = restaurants
+    else:
+        candidates = restaurants
+
+    return random.choice(candidates)
 
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -127,20 +173,37 @@ async def callback_removeall(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def cmd_roll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /roll — pick a random restaurant."""
+    """Handle /roll — pick a random restaurant, avoiding the previous result."""
     chat_id = update.effective_chat.id
 
+    # Read operations (load, load_previous_roll) fall into the STORAGE_ERROR
+    # path if they fail.
     try:
         restaurants = storage.load(chat_id)
         if not restaurants:
             await update.message.reply_text(messages.ROLL_EMPTY)
             return
 
-        pick = random.choice(restaurants)
-        await update.message.reply_text(messages.ROLL_RESULT.format(name=pick["name"]))
+        previous = storage.load_previous_roll(chat_id)
     except Exception:
-        logger.exception("Storage error in cmd_roll for chat %s", chat_id)
+        logger.exception("Storage read error in cmd_roll for chat %s", chat_id)
         await update.message.reply_text(messages.STORAGE_ERROR)
+        return
+
+    # Toggle is read from config.NO_REPEAT only (constant for the run).
+    pick = select_roll(restaurants, previous, config.NO_REPEAT)
+
+    # Persist the result as the new Previous_Roll_Result. A persistence
+    # failure here is logged but must NOT block returning the pick — the
+    # worst case is that the next roll may repeat.
+    try:
+        storage.save_previous_roll(chat_id, pick["name"])
+    except Exception:
+        logger.exception(
+            "Failed to persist previous roll for chat %s", chat_id
+        )
+
+    await update.message.reply_text(messages.ROLL_RESULT.format(name=pick["name"]))
 
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
