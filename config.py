@@ -1,3 +1,4 @@
+import logging
 import os
 from dotenv import load_dotenv
 
@@ -7,6 +8,21 @@ load_dotenv()
 # (case-insensitive). Anything not listed falls back to the default.
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
+
+# Default log level used when LOG_LEVEL is absent or unrecognised. WARNING
+# keeps the journal quiet by suppressing httpx's per-request INFO lines while
+# still recording the handlers' ERROR-level logs.
+DEFAULT_LOG_LEVEL = logging.WARNING
+
+# Accepted log level names, mapped to their logging module integer values.
+_LOG_LEVELS = {
+    "CRITICAL": logging.CRITICAL,
+    "ERROR": logging.ERROR,
+    "WARNING": logging.WARNING,
+    "WARN": logging.WARNING,
+    "INFO": logging.INFO,
+    "DEBUG": logging.DEBUG,
+}
 
 
 def parse_no_repeat(value: str | None) -> bool:
@@ -30,6 +46,21 @@ def parse_no_repeat(value: str | None) -> bool:
     return True
 
 
+def parse_log_level(value: str | None) -> int:
+    """Parse the LOG_LEVEL flag into a ``logging`` level integer.
+
+    Accepts standard level names (case-insensitive): ``CRITICAL``, ``ERROR``,
+    ``WARNING`` (alias ``WARN``), ``INFO``, ``DEBUG``. An absent value
+    (``None``) or any unrecognised value falls back to ``DEFAULT_LOG_LEVEL``
+    (``WARNING``) rather than raising, so a typo never prevents startup.
+
+    This is a pure function so it can be tested in isolation.
+    """
+    if value is None:
+        return DEFAULT_LOG_LEVEL
+    return _LOG_LEVELS.get(value.strip().upper(), DEFAULT_LOG_LEVEL)
+
+
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 DATA_FILE: str = os.getenv("DATA_FILE", "data/restaurants.json")
 
@@ -43,6 +74,11 @@ PREVIOUS_ROLL_FILE: str = os.getenv(
 # No_Repeat_Toggle: read once at startup and constant for the process
 # lifetime (no runtime mutation path). Defaults to enabled when absent.
 NO_REPEAT: bool = parse_no_repeat(os.getenv("NO_REPEAT"))
+
+# Logging verbosity, read once at startup. Defaults to WARNING to keep the
+# journal quiet; set LOG_LEVEL=INFO or DEBUG in the environment / .env for
+# more detail when debugging.
+LOG_LEVEL: int = parse_log_level(os.getenv("LOG_LEVEL"))
 
 if not BOT_TOKEN:
     raise RuntimeError(

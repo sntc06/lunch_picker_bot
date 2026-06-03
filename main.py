@@ -23,10 +23,13 @@ import config
 import bot
 
 # Direct logs to stdout (not the default stderr) so systemd/journald captures
-# operational output (Req 8.4). INFO keeps routine operational logs while the
-# handlers' logger.exception calls (ERROR level) are always recorded.
+# operational output (Req 8.4). The level is read from config.LOG_LEVEL
+# (env / .env, default WARNING) — WARNING suppresses httpx's per-request INFO
+# lines (one per getUpdates/sendMessage poll) while the handlers'
+# logger.exception calls (ERROR level) are always recorded. Set LOG_LEVEL=INFO
+# or DEBUG to get more detail when debugging.
 logging.basicConfig(
-    level=logging.INFO,
+    level=config.LOG_LEVEL,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )

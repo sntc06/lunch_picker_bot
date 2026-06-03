@@ -55,6 +55,13 @@ PREVIOUS_ROLL_FILE=data/previous_roll.json
 # Enabled by default. Accepts 1/true/yes/on (enabled) or 0/false/no/off
 # (disabled), case-insensitive. Unrecognized values fall back to enabled.
 NO_REPEAT=true
+
+# Optional: logging verbosity (default: WARNING). One of
+# CRITICAL/ERROR/WARNING/INFO/DEBUG, case-insensitive. WARNING keeps the
+# journal quiet by suppressing per-request HTTP logs; use INFO or DEBUG
+# for more detail when troubleshooting. Unrecognized values fall back to
+# WARNING.
+LOG_LEVEL=WARNING
 ```
 
 ### 3. Run the bot
@@ -84,4 +91,4 @@ python3 -m venv venv
 venv/bin/pip install -r requirements.txt
 ```
 
-The service runs the bot via `/opt/lunch-bot/venv/bin/python main.py`, and any optional settings (`DATA_FILE`, `PREVIOUS_ROLL_FILE`, `NO_REPEAT`) can be set in `/opt/lunch-bot/.env`.
+The service runs the bot via `/opt/lunch-bot/venv/bin/python main.py`, and any optional settings (`DATA_FILE`, `PREVIOUS_ROLL_FILE`, `NO_REPEAT`, `LOG_LEVEL`) can be set in `/opt/lunch-bot/.env`.
