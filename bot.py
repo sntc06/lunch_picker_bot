@@ -5,6 +5,7 @@ import random
 from datetime import datetime, timezone, timedelta
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import NetworkError, TimedOut
 from telegram.ext import ContextTypes
 
 import config
@@ -243,3 +244,34 @@ async def cmd_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if update.message.reply_to_message is not None:
         return
     await update.message.reply_text(messages.HELP_TEXT)
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Global error handler registered via ``Application.add_error_handler``.
+
+    Without a registered handler, python-telegram-bot logs every uncaught error
+    (including the transient ``NetworkError``/``TimedOut`` raised while polling
+    ``getUpdates``) with a full multi-frame traceback. Those network blips are
+    common and self-recovering, so they flood the journal with noise.
+
+    Registering this handler suppresses that default behaviour. Transient
+    network errors are condensed to a single concise WARNING line; any other
+    (unexpected) error is still logged with a full traceback so real bugs stay
+    debuggable.
+
+    When ``LOG_LEVEL=DEBUG``, the full stack trace is included for transient
+    network errors too, so the original tracebacks remain available when
+    actively debugging.
+    """
+    err = context.error
+    if isinstance(err, (NetworkError, TimedOut)):
+        # Attach the traceback only at DEBUG so normal WARNING-level logs stay
+        # to a single concise line.
+        debug = logger.isEnabledFor(logging.DEBUG)
+        logger.warning(
+            "Transient network error while polling: %s",
+            err,
+            exc_info=err if debug else None,
+        )
+        return
+    logger.error("Unhandled error: %s", err, exc_info=err)

@@ -46,4 +46,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.COMMAND, bot.cmd_unknown))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.cmd_unknown))
 
+    # Collapse noisy transient-network tracebacks into a single concise line.
+    app.add_error_handler(bot.error_handler)
+
     app.run_polling()
