@@ -239,5 +239,7 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle any unrecognised command or plain text."""
+    """Handle any unrecognised command or plain text (ignore replies)."""
+    if update.message.reply_to_message is not None:
+        return
     await update.message.reply_text(messages.HELP_TEXT)
