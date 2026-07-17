@@ -4,7 +4,15 @@
 
 The Telegram Lunch Bot is a single-process Python application that connects to the Telegram Bot API via long-polling. It maintains a per-chat restaurant list in a local JSON file and responds to five slash commands: `/add`, `/remove`, `/removeall`, `/roll`, and `/list`. The bot runs as a systemd service on an Ubuntu Linux server with no GUI requirement.
 
-To make repeated rolls feel useful, `/roll` supports a "no-repeat" behavior that avoids returning the same restaurant on two successive rolls in the same chat. This is governed by the `No_Repeat_Toggle`, a persistent configuration setting (default: enabled) read from the environment / `.env` file at startup — the same mechanism used for the bot token and data file path — and constant for the duration of a run. To support this, the bot remembers each chat's most recent roll result (the `Previous_Roll_Result`) on disk in the data folder so the behavior survives restarts, and degrades gracefully when avoiding a repeat is impossible (for example, a single-restaurant list).
+To make repeated rolls feel useful, `/roll` supports a configurable "no-repeat" behavior that avoids returning restaurants selected too recently in the same chat. This is governed by the `No_Repeat_Window`, a persistent **integer** configuration setting read from the environment / `.env` file at startup — the same mechanism used for the bot token and data file path — and constant for the duration of a run. Its semantics:
+
+- **`0`** — the behavior is disabled; every roll selects from the entire list.
+- **`1`** — only the single most recent result is excluded (this is the previous block-once behavior).
+- **`N`** (up to 1000) — up to the `N` most recent results are excluded.
+
+To support this, the bot remembers each chat's bounded `Recent_Roll_History` (an ordered list of recent result names, most recent last) on disk in the data folder so the behavior survives restarts, and it degrades gracefully — relaxing the exclusion oldest-first — when excluding the recent window would otherwise leave no restaurant to pick (for example, when the list is small relative to the window).
+
+For backward compatibility with earlier boolean-style configuration, a truthy value (`true`/`yes`/`on`) is interpreted as `1` and a falsy value (`false`/`no`/`off`) as `0`. Any value that cannot be interpreted as an integer in range `0`–`1000` or as a supported boolean falls back to the default of `1` without failing startup.
 
 ## Architecture
 
@@ -22,7 +30,7 @@ To make repeated rolls feel useful, `/roll` supports a "no-repeat" behavior that
 External:
   Telegram Bot API  ← long-polling via python-telegram-bot
   data/restaurants.json   ← persistent restaurant lists
-  data/previous_roll.json ← persistent per-chat previous roll results
+  data/recent_rolls.json  ← persistent per-chat recent roll history
   /etc/systemd/system/lunch-bot.service  ← systemd unit
 ```
 
@@ -30,7 +38,7 @@ The design is intentionally flat — no database, no web framework, no async com
 
 All user-facing response strings are written in Traditional Chinese as used in Taiwan (zh-TW, 繁體中文). Simplified Chinese (zh-CN) is not used. All message strings are centralised in a single `messages.py` module so they can be reviewed and updated in one place.
 
-## Components
+## Components and Interfaces
 
 ### messages.py
 
@@ -69,38 +77,49 @@ HELP_TEXT         = (
 
 ### config.py
 
-Reads the bot token, data file path, and no-repeat toggle from environment variables or a `.env` file. Raises a clear error at startup if required values are missing.
+Reads the bot token, data file path, and no-repeat window from environment variables or a `.env` file. Raises a clear error at startup if required values are missing.
 
 ```
 BOT_TOKEN         — Telegram bot token (required)
 DATA_FILE         — path to restaurant-list JSON file (default: data/restaurants.json)
-PREVIOUS_ROLL_FILE — path to previous-roll JSON file
-                     (optional, default: previous_roll.json beside DATA_FILE)
-NO_REPEAT         — No_Repeat_Toggle: avoid repeating the previous roll result
-                     (optional, default: enabled)
+RECENT_ROLLS_FILE — path to recent-roll-history JSON file
+                    (optional, default: recent_rolls.json beside DATA_FILE)
+NO_REPEAT_WINDOW  — No_Repeat_Window: integer count of most-recent roll results to
+                    exclude on the next roll (optional, default: 1)
 ```
 
-The previous-roll file lives in the same data folder as `DATA_FILE` (Req 5.3); by default it is `previous_roll.json` in `DATA_FILE`'s directory, and it can be overridden with `PREVIOUS_ROLL_FILE`.
+The recent-rolls file lives in the same data folder as `DATA_FILE` (Req 5.3); by default it is `recent_rolls.json` in `DATA_FILE`'s directory, and it can be overridden with `RECENT_ROLLS_FILE`.
 
-`NO_REPEAT` is parsed into a boolean `NO_REPEAT` constant at startup using the same truthy/falsy convention as a typical env flag (e.g. `1/true/yes/on` → enabled, `0/false/no/off` → disabled, case-insensitive). When the variable is absent the value defaults to `True` (enabled). The value is read once at startup and is constant for the lifetime of the process — there is no runtime command to change it.
+`NO_REPEAT_WINDOW` is parsed into an integer `NO_REPEAT_WINDOW` constant at startup by `parse_no_repeat_window(raw)` using the following rules (Req 3a.1, 3a.2, 3a.3):
+
+1. If the variable is **absent**, the value defaults to `1`.
+2. If the trimmed value parses as an integer in range `0`–`1000` inclusive, that integer is used.
+3. Otherwise, if the value (case-insensitive) is a supported **boolean-style** token, it is mapped for backward compatibility: `true`/`yes`/`on`/`1` → `1`, and `false`/`no`/`off`/`0` → `0`. (`0` and `1` are already covered by the integer rule and are consistent with this mapping.)
+4. Any other value — a non-integer, an out-of-range integer (negative or greater than 1000), or an unrecognised token — falls back to the default of `1`, and the bot logs a warning and **continues starting** rather than failing (Req 3a.3).
+
+The value is read once at startup and is constant for the lifetime of the process — there is no runtime command to change it (Req 3a.4).
 
 ### storage.py
 
-Thin wrapper around two JSON files, both in the data folder: `DATA_FILE` for restaurant lists and `PREVIOUS_ROLL_FILE` for per-chat previous roll results. Both are keyed by `chat_id`. Keeping the previous-roll data in its own file leaves the existing `restaurants.json` format untouched (no migration needed) while still satisfying the "same data folder / durable on disk" requirement (Req 5.3).
+Thin wrapper around two JSON files, both in the data folder: `DATA_FILE` for restaurant lists and `RECENT_ROLLS_FILE` for per-chat recent roll history. Both are keyed by `chat_id`. Keeping the recent-roll data in its own file leaves the existing `restaurants.json` format untouched (no migration needed) while still satisfying the "same data folder / durable on disk" requirement (Req 5.3).
 
 ```python
 load(chat_id) -> list[dict]            # restaurant list for a chat (DATA_FILE)
 save(chat_id, restaurants: list[dict]) -> None
 
-load_previous_roll(chat_id) -> str | None   # most recent roll result, or None (PREVIOUS_ROLL_FILE)
-save_previous_roll(chat_id, name: str) -> None
+load_recent_rolls(chat_id) -> list[str]   # ordered recent result names, most recent last
+save_recent_rolls(chat_id, history: list[str]) -> None
+append_recent_roll(chat_id, name: str, window: int) -> list[str]
+    # append name, trim to the most recent `window` entries, persist, and
+    # return the updated in-memory history
 ```
 
 - Both files are read/written atomically (write to temp file, then rename) to avoid corruption on crash, using the same helper used for the restaurant list.
 - Restaurant names are stored lowercase for case-insensitive deduplication.
-- `Previous_Roll_Result` is stored per chat in `PREVIOUS_ROLL_FILE` (Req 5.3), so it survives restarts (Req 3a.9) and is independent per chat (Req 3a.10).
-- `load_previous_roll` returns `None` when the file is missing or the chat has no entry — i.e. no roll has ever produced a result for that chat (Req 3a.5).
-- The previous roll result is stored using the same lowercase form as restaurant names so membership comparisons against the list are consistent.
+- `Recent_Roll_History` is stored per chat in `RECENT_ROLLS_FILE` (Req 5.3) as an ordered JSON array of lowercase result names with the most recent entry **last**, so it survives restarts (Req 3a.13) and is independent per chat (Req 3a.14).
+- `load_recent_rolls` returns an empty list `[]` when the file is missing, the chat has no entry, or the stored value for that chat cannot be read/parsed — i.e. the chat is treated as having no recorded history (Req 3a.10, 3a.17). A read/parse failure is logged.
+- `append_recent_roll` appends the new result, trims the history to the most recent `window` entries (keeping the newest), and persists it. If persistence fails, it logs the failure and still returns the updated in-memory history so the caller can keep it for the run (Req 3a.12, 3a.16).
+- Recent-roll names are stored using the same lowercase form as restaurant names so membership comparisons against the list are consistent (case-insensitive, Req 3a.6).
 
 ### bot.py
 
@@ -111,7 +130,7 @@ Contains one handler per command. Each handler calls storage, applies business l
 | `cmd_add` | `/add <name> [name2 ...]` | split args into names → for each: validate (reject if contains `\n` or `/`) → check list-full (max 20) → check duplicate → append entry → save → reply with per-name summary |
 | `cmd_remove` | `/remove <name>` | load list → find entry by name (case-insensitive) → remove → save → reply |
 | `cmd_removeall` | `/removeall` | load list → guard empty → send confirmation message with Yes/No inline keyboard → on confirm: clear list, save, reply success; on cancel: reply cancelled |
-| `cmd_roll` | `/roll` | load list → guard empty → select via no-repeat-aware logic (see below) → record + persist result as `Previous_Roll_Result` → reply with `entry["name"]` |
+| `cmd_roll` | `/roll` | load list → guard empty → load recent history → select via `select_roll` → append + persist result to history → reply with `entry["name"]` |
 | `cmd_list` | `/list` | load list → guard empty → format numbered list with name, added_by, added_at → reply |
 | `cmd_unknown` | any other message | reply with help text |
 
@@ -125,24 +144,31 @@ Contains one handler per command. Each handler calls storage, applies business l
 
 **`/roll` selection logic (no-repeat behaviour):**
 
-`cmd_roll` loads the restaurant list and guards the empty case (Req 3.2). It then selects a result using the following bounded decision, which never retries indefinitely (Req 3a.11):
+The core selection is factored into a **pure helper** so it can be property-tested without the Telegram I/O layer:
 
-1. If `config.NO_REPEAT` is **disabled** → select uniformly at random from the entire list (Req 3a.7). This is the same behaviour as Req 3.1/3.3.
-2. If `config.NO_REPEAT` is **enabled**:
-   - If the list has exactly one restaurant → return that restaurant (Req 3a.4).
-   - Load `Previous_Roll_Result` for the chat:
-     - If it is `None` (no roll has ever produced a result) → select uniformly at random from the entire list (Req 3a.5).
-     - If it is set but no longer present in the list → select uniformly at random from the entire list (Req 3a.6).
-     - Otherwise → compute `Eligible_Restaurants` = list excluding the entry whose name equals `Previous_Roll_Result`, and select uniformly at random from `Eligible_Restaurants` (Req 3a.3).
-3. After a result is chosen, record it as the new `Previous_Roll_Result` for the chat and persist it via `storage.save_previous_roll` (Req 3a.8), then reply with the name.
+```python
+select_roll(restaurants: list[dict], recent_history: list[str], no_repeat_window: int) -> dict
+```
 
-Selection is implemented by building the candidate list once and calling `random.choice` a single time — no rejection-sampling loop — which guarantees bounded selection (Req 3a.11). The toggle is read from `config.NO_REPEAT` only, so its value is constant for the run (Req 3a.2).
+`cmd_roll` loads the restaurant list and guards the empty case (Req 3.2). It then loads the chat's `Recent_Roll_History` and calls `select_roll`, which performs the following bounded decision (Req 3a.15 — never an unbounded retry loop):
+
+1. If `no_repeat_window == 0` → select uniformly at random from the entire list (Req 3a.5). This is the same behaviour as Req 3.1/3.3.
+2. If `no_repeat_window >= 1`:
+   - If the list has exactly one restaurant → return that restaurant (Req 3a.9).
+   - Take the **effective window** = the most recent `min(no_repeat_window, len(recent_history))` entries of `recent_history` (most recent last). If it is empty (no history recorded) → select uniformly at random from the entire list (Req 3a.10).
+   - Build the excluded-name set from those window entries, compared **case-insensitively**, ignoring any window name not currently present in the list (Req 3a.11).
+   - Compute `Eligible_Restaurants` = list entries whose name is not in the excluded set.
+   - **Graceful relaxation** (Req 3a.7): while `Eligible_Restaurants` is empty, drop the **oldest** name from the excluded set (i.e. relax exclusion from oldest to newest) and recompute, until at least one restaurant is eligible. Because there are at most `window` excluded names, this terminates in at most `window` relaxation steps (Req 3a.15).
+   - Select uniformly at random from `Eligible_Restaurants` (Req 3a.6, 3a.8).
+3. After a result is chosen, `cmd_roll` appends it to the chat's `Recent_Roll_History`, trims to the most recent `no_repeat_window` entries, and persists via `storage.append_recent_roll` (Req 3a.12). On persistence failure the result is still delivered and the updated history is retained in memory for the run (Req 3a.16).
+
+Selection builds the candidate list at most once per relaxation step (at most `1 + window` steps total) and calls `random.choice` a single time — no rejection-sampling loop — which guarantees bounded selection (Req 3a.15). The window is read from `config.NO_REPEAT_WINDOW` only, so its value is constant for the run (Req 3a.4).
 
 ### main.py
 
-Wires config → storage → bot handlers → `Application.run_polling()`. Logging is configured to stdout so systemd/journald captures it automatically.
+Wires config → storage → bot handlers → `Application.run_polling()`. Logging is configured to stdout so systemd/journald captures it automatically. At startup it loads each chat's persisted `Recent_Roll_History`; a chat whose stored history cannot be read/parsed is treated as empty and the failure is logged (Req 3a.13, 3a.17).
 
-## Data Model
+## Data Models
 
 Two JSON files, both in the data folder.
 
@@ -160,21 +186,22 @@ Two JSON files, both in the data folder.
 }
 ```
 
-**`PREVIOUS_ROLL_FILE` (e.g. `data/previous_roll.json`)** — maps each `chat_id` to the name of that chat's most recent roll result.
+**`RECENT_ROLLS_FILE` (e.g. `data/recent_rolls.json`)** — maps each `chat_id` to an ordered array of that chat's most recent roll result names, with the most recent result **last**. The array holds at most `No_Repeat_Window` entries.
 
 ```json
 {
-  "123456789": "sushi spot",
-  "987654321": "burger barn"
+  "123456789": ["pizza palace", "sushi spot"],
+  "987654321": ["burger barn"]
 }
 ```
 
-- File locations: `DATA_FILE` via its env var; `PREVIOUS_ROLL_FILE` defaults to `previous_roll.json` beside `DATA_FILE` and is overridable. Both live in the data folder (Req 5.3).
-- `name` is always stored lowercase for case-insensitive deduplication.
+- File locations: `DATA_FILE` via its env var; `RECENT_ROLLS_FILE` defaults to `recent_rolls.json` beside `DATA_FILE` and is overridable via `RECENT_ROLLS_FILE`. Both live in the data folder (Req 5.3).
+- `name` in the restaurant list is always stored lowercase for case-insensitive deduplication.
 - `added_by` is `update.effective_user.username` with `first_name` as fallback.
 - `added_at` is stored as an ISO 8601 timestamp with `+08:00` offset (Asia/Taipei) and displayed in Taiwan local time.
-- A `chat_id` in `PREVIOUS_ROLL_FILE` holds the lowercase name of the most recent roll result for that chat, or is absent when no roll has produced a result yet. It is tracked independently per chat (Req 3a.10).
-- Because the previous-roll data is a separate file, existing `restaurants.json` files continue to work as-is with no migration; a missing `PREVIOUS_ROLL_FILE` is treated as "no previous results recorded."
+- Each `chat_id` in `RECENT_ROLLS_FILE` holds an ordered list of lowercase result names (most recent last), or is absent when no roll has produced a result yet. History is tracked independently per chat (Req 3a.14).
+- The stored history for a chat is bounded to the most recent `No_Repeat_Window` names; older entries are dropped as new results are appended (Req 3a.12).
+- Because the recent-roll data is a separate file, existing `restaurants.json` files continue to work as-is with no migration; a missing or unparseable `RECENT_ROLLS_FILE` (or an unparseable per-chat entry) is treated as "no recent history recorded" (Req 3a.17).
 
 ## Deployment: systemd Service
 
@@ -213,101 +240,152 @@ Logs via: `journalctl -u lunch-bot -f`
 
 *A property is a characteristic or behavior that should hold true across all valid executions of a system — essentially, a formal statement about what the system should do. Properties serve as the bridge between human-readable specifications and machine-verifiable correctness guarantees.*
 
-### Property 1: Case-insensitive deduplication (Req 1.5)
+### Property 1: Case-insensitive deduplication
 
-For any restaurant name `n`, adding `n` and then adding any case variant of `n` must result in a rejection. The list must contain exactly one entry.
+For any restaurant name `n`, adding `n` and then adding any case variant of `n` must result in a rejection, leaving the list containing exactly one entry for that name.
 
 ```
-∀ name n: add(n) → add(n.upper()) → list contains n exactly once
+∀ name n: add(n) → add(case_variant(n)) → list contains n exactly once
 ```
 
-### Property 2: Round-trip persistence of the restaurant list (Req 4.1, 5.1, 5.2)
+**Validates: Requirements 1.5**
 
-For any sequence of add/remove operations, saving and reloading the storage must produce an equivalent list of dicts with identical `name`, `added_by`, and `added_at` fields.
+### Property 2: Invalid name rejection
+
+For any name containing `\n` (newline) or `/` (forward slash), `cmd_add` must reject it, never append it to the list, and reply with `ADD_INVALID_NAME`.
+
+```
+∀ name n where '\n' ∈ n ∨ '/' ∈ n: add(n) → list unchanged
+```
+
+**Validates: Requirements 1.6**
+
+### Property 3: Roll result is always a member of the list
+
+For any non-empty restaurant list, any `Recent_Roll_History`, and any `No_Repeat_Window`, `select_roll` returns exactly one element that is a member of the list.
+
+```
+∀ non-empty list L, ∀ history H, ∀ window w ≥ 0:
+    select_roll(L, H, w) ∈ L
+```
+
+**Validates: Requirements 3.1, 3a.9**
+
+### Property 4: Uniform selection over the eligible set
+
+For a fixed non-empty list, history, and window, over many rolls each restaurant in the computed `Eligible_Restaurants` set is selected with approximately equal frequency (verified statistically), and no restaurant outside the eligible set is ever selected.
+
+```
+∀ non-empty list L, history H, window w:
+    let E = eligible(L, H, w);
+    over many rolls, each e ∈ E chosen with freq ≈ 1/|E|, and result ∈ E
+```
+
+**Validates: Requirements 3.3, 3a.8**
+
+### Property 5: Full-list eligibility when the window does not constrain
+
+For any non-empty list, when the no-repeat exclusion does not apply — that is, when `No_Repeat_Window == 0`, OR the `Recent_Roll_History` is empty — every restaurant in the list is eligible and the result is selected from the entire list (over many rolls every element is reachable).
+
+```
+∀ non-empty list L, ∀ window w, ∀ history H where w == 0 ∨ H == []:
+    eligible(L, H, w) == L
+```
+
+**Validates: Requirements 3a.5, 3a.10**
+
+### Property 6: Exclusion of the recent window
+
+For any list, `Recent_Roll_History`, and window `w ≥ 1`, when excluding the most recent `min(w, len(H))` history entries still leaves at least one eligible restaurant, the roll result's name does not match (case-insensitively) any of those effective-window names.
+
+```
+∀ list L, history H, window w ≥ 1 where eligible-after-exclusion ≠ ∅:
+    result = select_roll(L, H, w) ⇒ result.name ∉ recent_window(H, w)  (case-insensitive)
+```
+
+**Validates: Requirements 3a.6**
+
+### Property 7: Stale history names exclude nothing
+
+For any list and history where some history names are no longer present in the list, only the names currently present in the list are excluded; absent history names have no effect on the eligible set.
+
+```
+∀ list L, history H, window w ≥ 1:
+    eligible(L, H, w) excludes only { h ∈ recent_window(H, w) : h ∈ names(L) }
+```
+
+**Validates: Requirements 3a.11**
+
+### Property 8: Graceful relaxation and bounded selection
+
+For any non-empty list, any `Recent_Roll_History`, and any window `w ≥ 0` (including when the window covers every name in the list), `select_roll` always returns exactly one element of the list, relaxing the exclusion from oldest to newest as needed, and completes within at most one pass plus at most `w` relaxation steps — never an unbounded or indefinite retry loop.
+
+```
+∀ non-empty list L, ∀ history H, ∀ window w ≥ 0:
+    select_roll(L, H, w) terminates, returns exactly one e ∈ L,
+    using ≤ 1 + w exclusion-relaxation steps
+```
+
+**Validates: Requirements 3a.7, 3a.9, 3a.15**
+
+### Property 9: Recent-roll-history persistence round-trip (bounded)
+
+For any chat and any sequence of appended results, persisting the `Recent_Roll_History` and then reloading it (simulating a restart) returns the same ordered history, most recent last, retaining at most `No_Repeat_Window` entries.
+
+```
+∀ chat c, ∀ names ns, ∀ window w:
+    apply append_recent_roll(c, ·, w) over ns → load_recent_rolls(c)
+        == last w entries of ns (most recent last)
+```
+
+**Validates: Requirements 3a.12, 3a.13, 5.3**
+
+### Property 10: Per-chat independence of recent roll history
+
+For any two distinct chats, appending to or saving the `Recent_Roll_History` of one chat must not change the `Recent_Roll_History` of the other.
+
+```
+∀ chats c1 ≠ c2, ∀ names n1:
+    append_recent_roll(c1, n1, w) → load_recent_rolls(c2) is unchanged
+```
+
+**Validates: Requirements 3a.14**
+
+### Property 11: Restaurant-list persistence round-trip
+
+For any sequence of add/remove operations, saving and reloading the storage produces an equivalent list of dicts with identical `name`, `added_by`, and `added_at` fields.
 
 ```
 ∀ list[dict] L: save(chat_id, L) → load(chat_id) == L
 ```
 
-### Property 3: Uniform random selection (Req 3.3)
+**Validates: Requirements 4.1, 5.1, 5.2**
 
-Over a large number of rolls on a list of `k` restaurants (with the No_Repeat_Toggle disabled, so the whole list is eligible), each restaurant should appear with frequency approximately `1/k`. Verified statistically (chi-squared or frequency count within tolerance).
+### Property 12: No_Repeat_Window parsing and default
 
-### Property 4: Roll result is always from the list (Req 3.1)
-
-For any non-empty list, the roll result is always a member of the list, regardless of toggle state or previous result.
+For any configuration input string, `parse_no_repeat_window` returns: the integer itself for integers in range `0`–`1000`; `1` for truthy boolean-style tokens (`true`/`yes`/`on`, case-insensitive) and `0` for falsy tokens (`false`/`no`/`off`, case-insensitive); and the default `1` for absent, non-integer, out-of-range, or unrecognised values — never raising.
 
 ```
-∀ non-empty list L: roll(L) ∈ L
+∀ env string s:
+    s absent                          → 1
+    s ∈ int ∧ 0 ≤ s ≤ 1000            → int(s)
+    s truthy-token                    → 1
+    s falsy-token                     → 0
+    otherwise                         → 1  (no exception)
 ```
 
-### Property 5: No-repeat avoids the previous result (Req 3a.3, 3a.4)
-
-For any restaurant list and any recorded `Previous_Roll_Result` that is present in the list, when the No_Repeat_Toggle is enabled the roll result must not equal the `Previous_Roll_Result` — **unless** the list contains exactly one restaurant, in which case that single restaurant is returned (graceful degradation).
-
-```
-∀ list L, ∀ prev ∈ L, toggle enabled:
-    if |L| >= 2 → roll(L, prev) ∈ L and roll(L, prev) != prev
-    if |L| == 1 → roll(L, prev) == the single element of L
-```
-
-### Property 6: Full-list eligibility when no-repeat does not constrain (Req 3a.5, 3a.6, 3a.7)
-
-For any non-empty list, when the no-repeat exclusion does not apply — that is, when the No_Repeat_Toggle is disabled, OR no `Previous_Roll_Result` is recorded, OR the recorded `Previous_Roll_Result` is no longer present in the list — every restaurant in the list is eligible and the result is selected uniformly from the entire list (no element, including any prior result, is excluded).
-
-```
-∀ non-empty list L, ∀ prev (prev = None ∨ prev ∉ L ∨ toggle disabled):
-    roll(L, prev) ∈ L, and over many rolls every element of L is reachable
-```
-
-### Property 7: Previous-roll persistence round-trip (Req 3a.8, 3a.9, 5.3)
-
-For any roll that produces a result, the result is recorded as the chat's `Previous_Roll_Result` and persisted to disk, such that a fresh read (simulating a restart) returns the same value.
-
-```
-∀ chat c, ∀ name n: save_previous_roll(c, n) → load_previous_roll(c) == n
-```
-
-### Property 8: Per-chat independence of the previous roll result (Req 3a.10)
-
-For any two distinct chats, recording the `Previous_Roll_Result` for one chat must not change the `Previous_Roll_Result` of the other.
-
-```
-∀ chats c1 != c2, ∀ names n1, n2:
-    save_previous_roll(c1, n1) → load_previous_roll(c2) is unchanged
-```
-
-### Property 9: Bounded selection (Req 3a.11)
-
-For any non-empty list and any combination of toggle state and previous result, the candidate set used for selection is non-empty and the roll completes by returning exactly one element — selection never loops or retries indefinitely.
-
-```
-∀ non-empty list L, ∀ toggle, ∀ prev:
-    candidates(L, toggle, prev) is non-empty ∧ roll returns exactly one element of L
-```
-
-### Property 10: No_Repeat_Toggle parsing and default (Req 3a.1)
-
-For any configuration input string, the parsed `NO_REPEAT` value matches the truthy/falsy convention (`1/true/yes/on` → enabled, `0/false/no/off` → disabled, case-insensitive); when the variable is absent the value defaults to enabled.
-
-```
-∀ env string s: parse_no_repeat(s) == truthy(s)
-parse_no_repeat(absent) == True
-```
-
-### Property 11: Invalid name rejection (Req 1.6)
-
-For any name containing `\n` or `/`, `cmd_add` must reject it and never append it to the list.
-
-```
-∀ name n where '\n' ∈ n or '/' ∈ n: add(n) → list unchanged, reply ADD_INVALID_NAME
-```
+**Validates: Requirements 3a.1, 3a.2, 3a.3**
 
 ### Non-property checks
 
 The following acceptance criteria are verified by example-based, smoke, or config-wiring tests rather than property-based tests:
 
-- **Req 3a.2** (toggle read once at startup, constant for the run): smoke check that `cmd_roll` reads `config.NO_REPEAT` and there is no runtime mutation path.
+- **Req 3a.4** (window read once at startup, constant for the run): smoke check that `select_roll` receives the window from `config.NO_REPEAT_WINDOW` and there is no runtime mutation path.
+- **Req 3a.16** (persistence failure after a roll): example test — mock `save_recent_rolls` to fail, assert the roll result is still returned, the in-memory history is updated, and the failure is logged.
+- **Req 3a.17** (unreadable history at startup): example test — corrupt/missing `recent_rolls.json`, assert `load_recent_rolls` returns `[]` per chat, startup proceeds, failure logged.
+- **Req 4.1 / 4.2** (list rendering and empty-list message): example tests.
+- **Req 6.1 / 6.2** (storage-failure notification, unknown-command help): example tests with mocked failures.
+- **Req 7.1–7.3** (zh-TW localization): review/smoke check of `messages.py`.
 - **Req 8.5** (missing `BOT_TOKEN` fails fast): example test — unset `BOT_TOKEN`, assert startup raises a clear error before any network call.
 
 ## Error Handling
@@ -318,7 +396,9 @@ All reply strings are in Traditional Chinese (zh-TW) sourced from `messages.py`.
 |---|---|
 | Storage read fails | Log error, reply「⚠️ 操作失敗，請稍後再試。」 |
 | Storage write fails | Log error, reply「⚠️ 操作失敗，請稍後再試。」 |
-| Previous-roll persistence fails during `/roll` | Log error; the roll result is still replied to the user. Failing to persist the previous result must not block returning a pick (worst case: the next roll may repeat). |
+| Recent-roll-history persistence fails during `/roll` (Req 3a.16) | Log error; the roll result is still replied to the user, and the updated history is retained in memory for the rest of the run. Failing to persist must not block returning a pick (worst case: after a restart, the unpersisted results are forgotten). |
+| Recent-roll-history unreadable / unparseable at startup (Req 3a.17) | Treat the affected chat's history as empty (`[]`), log the failure, and continue starting. |
+| Invalid / out-of-range / unset `NO_REPEAT_WINDOW` value (Req 3a.3) | Fall back to the default window of `1`, log a warning, and continue starting rather than failing. |
 | `/add` with no argument | Reply with usage:「用法：/add <餐廳名稱> [餐廳名稱2 ...]」 |
 | `/add` name contains `\n` or `/` | Reply with「⚠️ 餐廳名稱格式不正確，名稱不可包含換行或斜線：{name}」 |
 | `/remove` with no argument | Reply with usage:「用法：/remove <餐廳名稱>」 |
@@ -326,7 +406,6 @@ All reply strings are in Traditional Chinese (zh-TW) sourced from `messages.py`.
 | `/removeall` — user cancels confirmation | Reply「已取消，清單保持不變。」 |
 | Unknown command or plain text | Reply with help listing all five commands (zh-TW) |
 | Missing `BOT_TOKEN` at startup | Raise `RuntimeError` with descriptive message, exit non-zero |
-| Invalid / unset `NO_REPEAT` value | Treat absent as enabled (default); unrecognised values fall back to the default rather than failing startup |
 
 ## Testing Strategy
 
@@ -335,18 +414,21 @@ A dual approach is used: example/edge-case unit tests for specific behaviours, a
 **Property-based testing:**
 - Library: [Hypothesis](https://hypothesis.readthedocs.io/) (the standard choice for Python).
 - Each property in the Correctness Properties section is implemented by a single property-based test running a minimum of 100 iterations.
-- The roll selection logic should be factored into a pure helper (e.g. `select_roll(restaurants, previous, no_repeat) -> entry`) so Properties 4–6 and 9 can be tested without the Telegram I/O layer.
-- Storage round-trip and per-chat independence (Properties 2, 7, 8) are tested against temporary `DATA_FILE` and `PREVIOUS_ROLL_FILE` paths.
+- The roll selection logic is factored into the pure helper `select_roll(restaurants, recent_history, no_repeat_window) -> entry` so Properties 3–8 can be tested without the Telegram I/O layer. Generators cover: window `0`, window `≥ 1` up to the list size and beyond, empty history, history longer than the window, history names not present in the list, and single-restaurant lists (Req 3a.9 edge case).
+- Storage round-trip, bounded history, and per-chat independence (Properties 9, 10, 11) are tested against temporary `DATA_FILE` and `RECENT_ROLLS_FILE` paths, exercising `save`/`load`, `append_recent_roll`, `save_recent_rolls`, and `load_recent_rolls`.
+- Config parsing (Property 12) is tested against `parse_no_repeat_window` with generated integer strings (in and out of range), boolean-style tokens in mixed case, absent values, and arbitrary junk strings.
 - Each property test is tagged with a comment referencing its design property, e.g.
-  `# Feature: telegram-lunch-bot, Property 5: No-repeat avoids the previous result`.
+  `# Feature: telegram-lunch-bot, Property 8: Graceful relaxation and bounded selection`.
 
 **Unit / example / smoke tests:**
-- Req 3a.2 — smoke test that `cmd_roll` consults `config.NO_REPEAT` and no runtime path mutates it.
+- Req 3a.4 — smoke test that `cmd_roll` sources the window from `config.NO_REPEAT_WINDOW` and no runtime path mutates it.
+- Req 3a.16 — example test: mock `save_recent_rolls` to raise; assert the roll result is still returned and the in-memory history is updated, with the failure logged.
+- Req 3a.17 — example test: a corrupt or missing `recent_rolls.json` (or a corrupt per-chat entry) makes `load_recent_rolls` return `[]` and startup proceeds, with the failure logged.
 - Req 8.5 — example test that an unset `BOT_TOKEN` raises at startup before any network call.
-- Edge cases for the no-repeat boundary: single-restaurant list (Req 3a.4), previous result absent (Req 3a.5), and previous result removed from the list (Req 3a.6).
-- Missing `PREVIOUS_ROLL_FILE`: `load_previous_roll` returns `None` for any chat (treated as "no previous results recorded").
+- Edge cases: single-restaurant list (Req 3a.9), empty history (Req 3a.10), and history names removed from the list (Req 3a.11).
+- Missing `RECENT_ROLLS_FILE`: `load_recent_rolls` returns `[]` for any chat (treated as "no recent history recorded").
 
-**Existing tests** (`tests/test_config.py`, `tests/test_storage.py`, `tests/test_restaurant_names.py`, `tests/test_invalid_name_rejection.py`) remain valid; the storage tests should be extended for the new `previous_roll` functions and the separate `PREVIOUS_ROLL_FILE`.
+**Existing tests** (`tests/test_config.py`, `tests/test_storage.py`, `tests/test_restaurant_names.py`, `tests/test_invalid_name_rejection.py`, `tests/test_no_repeat_parsing.py`, `tests/test_select_roll.py`) remain valid but MUST be updated for the new design: `test_no_repeat_parsing.py` for the integer `parse_no_repeat_window`, `test_select_roll.py` for the `(restaurants, recent_history, no_repeat_window)` signature and window/relaxation semantics, and `test_storage.py` for the `recent_rolls` functions and the separate `RECENT_ROLLS_FILE`.
 
 ## Dependencies
 
