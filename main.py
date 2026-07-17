@@ -8,9 +8,9 @@ lunch-bot`` (Req 8.4). Importing ``config`` at startup also triggers the
 ``BOT_TOKEN`` validation, so a missing token fails fast before any network
 call (Req 8.5).
 
-The ``/roll`` no-repeat behaviour survives restarts automatically: the
-previous roll result is persisted per chat to disk and re-read on each
-``/roll`` via ``storage.load_previous_roll`` (Req 3a.9), so no in-memory
+The ``/roll`` no-repeat behaviour survives restarts automatically: each
+chat's ``Recent_Roll_History`` is persisted to disk and re-read on each
+``/roll`` via ``storage.load_recent_rolls`` (Req 3a.13), so no in-memory
 startup load is required.
 """
 

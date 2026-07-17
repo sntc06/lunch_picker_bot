@@ -1,10 +1,10 @@
 """
-Property test for config.parse_no_repeat — Property 10:
-No_Repeat_Toggle parsing and default.
+Property test for config.parse_no_repeat_window — No_Repeat_Window parsing
+and default.
 
-# Feature: telegram-lunch-bot, Property 10: No_Repeat_Toggle parsing and default
+# Feature: telegram-lunch-bot, No_Repeat_Window parsing and default
 
-Validates: Requirements 3a.1
+Validates: Requirements 3a.1, 3a.2, 3a.3
 """
 import importlib
 import sys
@@ -18,9 +18,14 @@ from hypothesis import strategies as st
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Recognised tokens, mirroring config.py's truthy/falsy convention.
+# Recognised boolean-style tokens, mirroring config.py's backward-compatible
+# fallback: truthy → 1, falsy → 0.
 TRUE_TOKENS = {"1", "true", "yes", "on"}
 FALSE_TOKENS = {"0", "false", "no", "off"}
+
+DEFAULT_WINDOW = 1
+WINDOW_MIN = 0
+WINDOW_MAX = 1000
 
 
 def _load_config():
@@ -34,95 +39,105 @@ def _load_config():
     return config
 
 
-def _reference_truthy(value):
-    """Reference implementation of the truthy/falsy convention.
+def _reference_window(value):
+    """Reference implementation of the No_Repeat_Window parsing rules.
 
-    ``1/true/yes/on`` → True, ``0/false/no/off`` → False (case-insensitive,
-    surrounding whitespace stripped). Absent (``None``) → True (default
-    enabled). Any UNRECOGNISED value falls back to the default (True).
+    1. Absent (``None``) → default ``1``.
+    2. Integer in range ``0``-``1000`` (after strip) → that integer.
+    3. Otherwise a boolean-style token (case-insensitive): truthy → ``1``,
+       falsy → ``0``.
+    4. Any other value → default ``1``.
     """
     if value is None:
-        return True
-    normalised = value.strip().lower()
+        return DEFAULT_WINDOW
+
+    trimmed = value.strip()
+    try:
+        parsed = int(trimmed)
+    except ValueError:
+        parsed = None
+    if parsed is not None:
+        if WINDOW_MIN <= parsed <= WINDOW_MAX:
+            return parsed
+        return DEFAULT_WINDOW
+
+    normalised = trimmed.lower()
     if normalised in TRUE_TOKENS:
-        return True
+        return 1
     if normalised in FALSE_TOKENS:
-        return False
-    return True
+        return 0
+    return DEFAULT_WINDOW
 
 
-# A strategy that builds recognised tokens with random casing and surrounding
-# whitespace, to exercise the case-insensitive + strip behaviour.
-def _decorate(token):
-    return st.builds(
-        lambda tok, lead, trail, upper: (
-            (" " * lead) + (tok.upper() if upper else tok) + (" " * trail)
-        ),
-        tok=st.just(token),
-        lead=st.integers(min_value=0, max_value=3),
-        trail=st.integers(min_value=0, max_value=3),
-        upper=st.booleans(),
-    )
+# ---------------------------------------------------------------------------
+# Property: parsing matches the reference rules for arbitrary text
+# ---------------------------------------------------------------------------
+
+@given(st.text())
+@settings(max_examples=200)
+def test_parse_window_matches_reference(value):
+    """
+    **Validates: Requirements 3a.1, 3a.2, 3a.3**
+
+    For any input string, ``parse_no_repeat_window`` returns an int that
+    matches the reference parsing rules.
+    """
+    config = _load_config()
+    result = config.parse_no_repeat_window(value)
+    assert isinstance(result, int)
+    assert result == _reference_window(value)
 
 
-_known_token_strategy = st.one_of(
-    *[_decorate(t) for t in sorted(TRUE_TOKENS | FALSE_TOKENS)]
+# ---------------------------------------------------------------------------
+# Property: any integer in range round-trips exactly
+# ---------------------------------------------------------------------------
+
+@given(
+    n=st.integers(min_value=WINDOW_MIN, max_value=WINDOW_MAX),
+    lead=st.integers(min_value=0, max_value=3),
+    trail=st.integers(min_value=0, max_value=3),
 )
-
-
-# ---------------------------------------------------------------------------
-# Property 10: parsing matches the truthy/falsy convention
-# ---------------------------------------------------------------------------
-
-@given(st.text())
 @settings(max_examples=200)
-def test_parse_no_repeat_matches_convention(value):
-    """
-    **Validates: Requirements 3a.1**
-
-    Property 10: For any input string, ``parse_no_repeat`` returns a bool
-    that matches the truthy/falsy convention. Random text is handled by the
-    reference implementation rather than assumed to be unrecognised, since
-    ``st.text()`` could occasionally produce a recognised token.
-    """
+def test_in_range_integers_round_trip(n, lead, trail):
+    """An integer within 0-1000 (with surrounding whitespace) parses to itself."""
     config = _load_config()
-    result = config.parse_no_repeat(value)
-    assert isinstance(result, bool)
-    assert result == _reference_truthy(value)
+    raw = (" " * lead) + str(n) + (" " * trail)
+    assert config.parse_no_repeat_window(raw) == n
 
 
-@given(_known_token_strategy)
+# ---------------------------------------------------------------------------
+# Property: out-of-range integers fall back to the default
+# ---------------------------------------------------------------------------
+
+@given(
+    n=st.integers().filter(lambda x: x < WINDOW_MIN or x > WINDOW_MAX),
+)
 @settings(max_examples=200)
-def test_parse_no_repeat_handles_case_and_whitespace(value):
+def test_out_of_range_integers_default(n):
+    """An integer outside 0-1000 falls back to the default (1)."""
+    config = _load_config()
+    assert config.parse_no_repeat_window(str(n)) == DEFAULT_WINDOW
+
+
+# ---------------------------------------------------------------------------
+# Absent value defaults to 1
+# ---------------------------------------------------------------------------
+
+def test_parse_window_none_defaults_to_one():
     """
     **Validates: Requirements 3a.1**
 
-    Property 10: Recognised tokens with arbitrary casing and surrounding
-    whitespace parse to the same boolean as the reference convention.
+    An absent value (``None``) defaults to ``1``.
     """
     config = _load_config()
-    assert config.parse_no_repeat(value) == _reference_truthy(value)
+    assert config.parse_no_repeat_window(None) == DEFAULT_WINDOW
 
 
 # ---------------------------------------------------------------------------
-# Property 10: absent value defaults to enabled (True)
+# Backward-compatible boolean-style tokens
 # ---------------------------------------------------------------------------
 
-def test_parse_no_repeat_none_defaults_to_true():
-    """
-    **Validates: Requirements 3a.1**
-
-    Property 10: An absent value (``None``) defaults to enabled (``True``).
-    """
-    config = _load_config()
-    assert config.parse_no_repeat(None) is True
-
-
-# ---------------------------------------------------------------------------
-# Explicit example assertions for each recognised token
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("token", sorted(TRUE_TOKENS))
+@pytest.mark.parametrize("token", sorted(TRUE_TOKENS - {"1"}))
 @pytest.mark.parametrize("transform", [
     lambda s: s,
     lambda s: s.upper(),
@@ -130,13 +145,13 @@ def test_parse_no_repeat_none_defaults_to_true():
     lambda s: f"  {s}  ",
     lambda s: f"\t{s.upper()}\n",
 ])
-def test_recognised_true_tokens(token, transform):
-    """Each recognised true token → True regardless of case/whitespace."""
+def test_truthy_tokens_map_to_one(token, transform):
+    """Each recognised truthy token → 1 regardless of case/whitespace."""
     config = _load_config()
-    assert config.parse_no_repeat(transform(token)) is True
+    assert config.parse_no_repeat_window(transform(token)) == 1
 
 
-@pytest.mark.parametrize("token", sorted(FALSE_TOKENS))
+@pytest.mark.parametrize("token", sorted(FALSE_TOKENS - {"0"}))
 @pytest.mark.parametrize("transform", [
     lambda s: s,
     lambda s: s.upper(),
@@ -144,29 +159,33 @@ def test_recognised_true_tokens(token, transform):
     lambda s: f"  {s}  ",
     lambda s: f"\t{s.upper()}\n",
 ])
-def test_recognised_false_tokens(token, transform):
-    """Each recognised false token → False regardless of case/whitespace."""
+def test_falsy_tokens_map_to_zero(token, transform):
+    """Each recognised falsy token → 0 regardless of case/whitespace."""
     config = _load_config()
-    assert config.parse_no_repeat(transform(token)) is False
+    assert config.parse_no_repeat_window(transform(token)) == 0
 
 
 # ---------------------------------------------------------------------------
-# Property 10: unrecognised strings fall back to the default (True)
+# Unrecognised non-integer strings fall back to the default
 # ---------------------------------------------------------------------------
 
 @given(st.text())
 @settings(max_examples=200)
-def test_unrecognised_strings_default_to_true(value):
+def test_unrecognised_strings_default_to_one(value):
     """
-    **Validates: Requirements 3a.1**
+    **Validates: Requirements 3a.1, 3a.3**
 
-    Property 10: Strings that are not recognised tokens (after strip+lower)
-    fall back to the default (``True``). Recognised tokens are filtered out
-    so the assertion targets the unrecognised case specifically.
+    Strings that are neither an in-range integer nor a recognised
+    boolean-style token fall back to the default (``1``).
     """
-    normalised = value.strip().lower()
-    if normalised in TRUE_TOKENS or normalised in FALSE_TOKENS:
-        # Not an unrecognised value — skip; covered by the convention test.
-        return
+    trimmed = value.strip()
+    # Filter out anything the parser would legitimately recognise.
+    try:
+        int(trimmed)
+        return  # integer-like: covered by the range tests
+    except ValueError:
+        pass
+    if trimmed.lower() in TRUE_TOKENS or trimmed.lower() in FALSE_TOKENS:
+        return  # recognised token: covered by the token tests
     config = _load_config()
-    assert config.parse_no_repeat(value) is True
+    assert config.parse_no_repeat_window(value) == DEFAULT_WINDOW

@@ -35,27 +35,6 @@ _LOG_LEVELS = {
 }
 
 
-def parse_no_repeat(value: str | None) -> bool:
-    """Parse the NO_REPEAT flag into a boolean.
-
-    Uses the usual truthy/falsy convention (case-insensitive):
-    ``1/true/yes/on`` → ``True`` and ``0/false/no/off`` → ``False``.
-    An absent value (``None``) defaults to ``True`` (enabled). Any
-    unrecognised value falls back to the default (``True``) rather than
-    raising, so a typo never prevents startup.
-
-    This is a pure function so it can be property-tested in isolation.
-    """
-    if value is None:
-        return True
-    normalised = value.strip().lower()
-    if normalised in _TRUE_VALUES:
-        return True
-    if normalised in _FALSE_VALUES:
-        return False
-    return True
-
-
 def parse_no_repeat_window(raw: str | None) -> int:
     """Parse the NO_REPEAT_WINDOW flag into an integer window count.
 
@@ -130,13 +109,6 @@ def parse_log_level(value: str | None) -> int:
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 DATA_FILE: str = os.getenv("DATA_FILE", "data/restaurants.json")
 
-# Previous-roll file lives in the same data folder as DATA_FILE. By default
-# it is `previous_roll.json` beside DATA_FILE; it can be overridden via env.
-PREVIOUS_ROLL_FILE: str = os.getenv(
-    "PREVIOUS_ROLL_FILE",
-    os.path.join(os.path.dirname(DATA_FILE), "previous_roll.json"),
-)
-
 # Recent-roll history file lives in the same data folder as DATA_FILE. By
 # default it is `recent_rolls.json` beside DATA_FILE; it can be overridden via
 # env. Kept separate from DATA_FILE so restaurants.json needs no migration.
@@ -144,10 +116,6 @@ RECENT_ROLLS_FILE: str = os.getenv(
     "RECENT_ROLLS_FILE",
     os.path.join(os.path.dirname(DATA_FILE), "recent_rolls.json"),
 )
-
-# No_Repeat_Toggle: read once at startup and constant for the process
-# lifetime (no runtime mutation path). Defaults to enabled when absent.
-NO_REPEAT: bool = parse_no_repeat(os.getenv("NO_REPEAT"))
 
 # No_Repeat_Window: integer count of most-recent roll results to exclude on
 # the next roll. Read once at startup and constant for the process lifetime

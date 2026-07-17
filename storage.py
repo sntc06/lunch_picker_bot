@@ -6,9 +6,10 @@ Two JSON files live in the data folder, both keyed by chat_id (str):
       * name     (str, original casing preserved)
       * added_by (str)
       * added_at (str, ISO 8601 with +08:00 offset)
-  - ``PREVIOUS_ROLL_FILE`` — the most recent roll result for each chat,
-    stored as a lowercase name string. Keeping it in a separate file leaves
-    the restaurant-list format untouched (no migration needed).
+  - ``RECENT_ROLLS_FILE`` — the bounded ``Recent_Roll_History`` for each chat,
+    stored as an ordered JSON array of lowercase result names (most recent
+    last). Keeping it in a separate file leaves the restaurant-list format
+    untouched (no migration needed).
 
 Both files are read with a shared ``_read_json`` helper and written with a
 shared atomic ``_atomic_write`` helper (write to a temp file, then rename) so
@@ -22,7 +23,7 @@ import os
 import tempfile
 from typing import Any
 
-from config import DATA_FILE, PREVIOUS_ROLL_FILE, RECENT_ROLLS_FILE
+from config import DATA_FILE, RECENT_ROLLS_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -73,27 +74,6 @@ def save(chat_id: int | str, restaurants: list[dict]) -> None:
     data = _read_json(DATA_FILE)
     data[str(chat_id)] = restaurants
     _atomic_write(DATA_FILE, data)
-
-
-def load_previous_roll(chat_id: int | str) -> str | None:
-    """Return the most recent roll result for *chat_id*, or None.
-
-    Returns None when ``PREVIOUS_ROLL_FILE`` is missing or when the chat has
-    no recorded result (i.e. no roll has ever produced a result for it).
-    """
-    data = _read_json(PREVIOUS_ROLL_FILE)
-    return data.get(str(chat_id))
-
-
-def save_previous_roll(chat_id: int | str, name: str) -> None:
-    """Persist *name* as the previous roll result for *chat_id* atomically.
-
-    The name is stored lowercase (consistent with restaurant-name storage)
-    so membership comparisons against the restaurant list are reliable.
-    """
-    data = _read_json(PREVIOUS_ROLL_FILE)
-    data[str(chat_id)] = name.lower()
-    _atomic_write(PREVIOUS_ROLL_FILE, data)
 
 
 def load_recent_rolls(chat_id: int | str) -> list[str]:
