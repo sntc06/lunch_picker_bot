@@ -12,7 +12,15 @@ A Telegram bot that helps you decide where to eat lunch. Maintain a list of rest
 
 ### No-repeat rolls
 
-By default, `/roll` avoids returning the same restaurant on two successive rolls in the same chat, so repeated rolls feel more varied. The most recent result is remembered per chat on disk, so this behavior keeps working after a restart. It degrades gracefully when avoiding a repeat isn't possible (for example, a single-restaurant list). You can turn it off with the `NO_REPEAT` setting (see below).
+By default, `/roll` avoids returning any restaurant selected too recently in the same chat, so repeated rolls feel more varied. This is controlled by `NO_REPEAT_WINDOW`, an integer count of the most recent results to exclude:
+
+- `0` — disabled; every roll picks from the entire list.
+- `1` (default) — excludes only the single most recent result.
+- `N` (up to 1000) — excludes up to the `N` most recent results.
+
+Each chat's recent-roll history is remembered per chat on disk, so this behavior keeps working after a restart. It degrades gracefully — relaxing the exclusion oldest-first — when excluding the recent window would otherwise leave no restaurant to pick (for example, a single-restaurant list, or a list smaller than the window).
+
+For backward compatibility with the earlier on/off setting, a truthy value (`true`/`yes`/`on`) is treated as `1` and a falsy value (`false`/`no`/`off`) as `0`. Any value that isn't a valid integer in range `0`–`1000` or a recognized boolean falls back to the default of `1`.
 
 ## Setup
 
@@ -47,14 +55,15 @@ BOT_TOKEN=123456789:ABCdefGhIJKlmNoPQRstuVWXyz
 # Optional: path to the JSON storage file (default: data/restaurants.json)
 DATA_FILE=data/restaurants.json
 
-# Optional: path to the previous-roll JSON file used for no-repeat rolls
-# (default: previous_roll.json beside DATA_FILE)
-PREVIOUS_ROLL_FILE=data/previous_roll.json
+# Optional: path to the recent-roll-history JSON file used for no-repeat rolls
+# (default: recent_rolls.json beside DATA_FILE)
+RECENT_ROLLS_FILE=data/recent_rolls.json
 
-# Optional: avoid repeating the previous /roll result in the same chat.
-# Enabled by default. Accepts 1/true/yes/on (enabled) or 0/false/no/off
-# (disabled), case-insensitive. Unrecognized values fall back to enabled.
-NO_REPEAT=true
+# Optional: number of most recent /roll results to avoid repeating in the
+# same chat. Integer 0-1000 (default: 1). 0 disables the behavior. For
+# backward compatibility, 1/true/yes/on maps to 1 and 0/false/no/off maps
+# to 0, case-insensitive. Unrecognized values fall back to the default (1).
+NO_REPEAT_WINDOW=1
 
 # Optional: logging verbosity (default: WARNING). One of
 # CRITICAL/ERROR/WARNING/INFO/DEBUG, case-insensitive. WARNING keeps the
@@ -91,4 +100,4 @@ python3 -m venv venv
 venv/bin/pip install -r requirements.txt
 ```
 
-The service runs the bot via `/opt/lunch-bot/venv/bin/python main.py`, and any optional settings (`DATA_FILE`, `PREVIOUS_ROLL_FILE`, `NO_REPEAT`, `LOG_LEVEL`) can be set in `/opt/lunch-bot/.env`.
+The service runs the bot via `/opt/lunch-bot/venv/bin/python main.py`, and any optional settings (`DATA_FILE`, `RECENT_ROLLS_FILE`, `NO_REPEAT_WINDOW`, `LOG_LEVEL`) can be set in `/opt/lunch-bot/.env`.
