@@ -16,13 +16,13 @@ Property numbers below match the Correctness Properties section of `design.md` (
   - No Simplified Chinese characters; use Taiwan-region phrasing
   - _Requirements: 1.4, 1.6, 2a.1, 2a.2, 2a.3, 2a.4, 7.1, 7.2, 7.3_
 
-- [ ] 2. Update `config.py` with environment variable loading (token, data file, recent-rolls file, no-repeat window)
+- [x] 2. Update `config.py` with environment variable loading (token, data file, recent-rolls file, no-repeat window)
   - [x] 2.1 Implement core config loading using `python-dotenv`
     - Read `BOT_TOKEN` (required) and `DATA_FILE` (default: `data/restaurants.json`) from env / `.env`
     - Raise `RuntimeError` with a descriptive message if `BOT_TOKEN` is missing
     - _Requirements: 8.5, 6.1_
 
-  - [ ] 2.2 Add `RECENT_ROLLS_FILE` and `NO_REPEAT_WINDOW` configuration
+  - [x] 2.2 Add `RECENT_ROLLS_FILE` and `NO_REPEAT_WINDOW` configuration
     - Read `RECENT_ROLLS_FILE` from env; default to `recent_rolls.json` in the same directory as `DATA_FILE`
     - Implement pure helper `parse_no_repeat_window(raw: str | None) -> int` and expose the result as the `NO_REPEAT_WINDOW` integer constant, using these rules: absent → default `1`; trimmed value that parses as an integer in range `0`–`1000` inclusive → that integer; otherwise a boolean-style token (case-insensitive) `true`/`yes`/`on` → `1` and `false`/`no`/`off` → `0`; any other value (non-integer, out-of-range, or unrecognised) → default `1` while logging a warning and continuing startup (never raising)
     - Read once at startup; value is constant for the process lifetime (no runtime mutation path)
@@ -39,14 +39,14 @@ Property numbers below match the Correctness Properties section of `design.md` (
     - Unset `BOT_TOKEN` and assert `RuntimeError` is raised on config load, before any network call
     - Already implemented in `tests/test_config.py`
 
-- [ ] 3. Update `storage.py` with atomic JSON persistence for both files
+- [x] 3. Update `storage.py` with atomic JSON persistence for both files
   - [x] 3.1 Implement `load(chat_id) -> list[dict]` and `save(chat_id, restaurants: list[dict]) -> None`
     - Key the restaurant list by `chat_id` in `DATA_FILE`; each entry is a dict with `name` (str), `added_by` (str), and `added_at` (ISO 8601 str with +08:00 offset)
     - Write atomically: write to a temp file then `os.replace` to avoid corruption
     - Return empty list when file does not exist or `chat_id` is absent
     - _Requirements: 5.1, 5.2_
 
-  - [ ] 3.2 Implement recent-roll history functions in a separate `RECENT_ROLLS_FILE`
+  - [x] 3.2 Implement recent-roll history functions in a separate `RECENT_ROLLS_FILE`
     - `load_recent_rolls(chat_id) -> list[str]`: return the chat's ordered history (most recent last); return `[]` when the file is missing, the chat has no entry, or the stored value cannot be read/parsed, logging read/parse failures (Req 3a.10, 3a.17)
     - `save_recent_rolls(chat_id, history: list[str]) -> None`: persist the ordered history for the chat, keyed by `chat_id`, using the same atomic write-then-rename helper as the restaurant list
     - `append_recent_roll(chat_id, name: str, window: int) -> list[str]`: append the new result, trim to the most recent `window` entries (keeping the newest), persist, and return the updated in-memory history; on persistence failure, log and still return the updated in-memory history (Req 3a.12, 3a.16)
@@ -60,7 +60,7 @@ Property numbers below match the Correctness Properties section of `design.md` (
     - For any arbitrary `list[dict]` `L` (each dict with `name`, `added_by`, `added_at`), assert `load(chat_id)` equals `L` after `save(chat_id, L)`
     - Already implemented in `tests/test_storage.py`
 
-  - [ ]* 3.4 Write property test for recent-roll-history persistence round-trip (Property 9)
+  - [x] 3.4 Write property test for recent-roll-history persistence round-trip (Property 9)
     - **Property 9: Recent-roll-history persistence round-trip (bounded)**
     - **Validates: Requirements 3a.12, 3a.13, 5.3**
     - For any chat `c`, any sequence of names `ns`, and any window `w`, apply `append_recent_roll(c, ·, w)` over `ns`, then assert a fresh `load_recent_rolls(c)` (simulating a restart) equals the last `w` entries of `ns`, most recent last
@@ -70,13 +70,13 @@ Property numbers below match the Correctness Properties section of `design.md` (
     - **Validates: Requirements 3a.14**
     - For any two distinct chats `c1 != c2`, assert `append_recent_roll(c1, n1, w)` (or `save_recent_rolls(c1, ...)`) does not change `load_recent_rolls(c2)`
 
-  - [ ]* 3.6 Write example test for graceful handling of missing/corrupt history (non-property check)
+  - [x] 3.6 Write example test for graceful handling of missing/corrupt history (non-property check)
     - **Non-property check (example test)**
     - **Validates: Requirements 3a.17**
     - Assert `load_recent_rolls` returns `[]` when `RECENT_ROLLS_FILE` is missing, and returns `[]` and logs when the file or a per-chat entry is corrupt/unparseable
 
-- [ ] 4. Implement the pure roll selection helper
-  - [ ] 4.1 Implement `select_roll(restaurants, recent_history, no_repeat_window) -> entry`
+- [x] 4. Implement the pure roll selection helper
+  - [x] 4.1 Implement `select_roll(restaurants, recent_history, no_repeat_window) -> entry`
     - Pure function with no Telegram or storage I/O, so it can be tested directly
     - If `no_repeat_window == 0` → select uniformly at random from the entire list (Req 3a.5)
     - If `no_repeat_window >= 1`: single-restaurant list → return that restaurant (Req 3a.9); take the effective window = the most recent `min(no_repeat_window, len(recent_history))` entries; if empty → select uniformly from the entire list (Req 3a.10)
@@ -115,7 +115,7 @@ Property numbers below match the Correctness Properties section of `design.md` (
     - **Validates: Requirements 3a.7, 3a.9, 3a.15**
     - For any non-empty list, any history, and any window `w >= 0` (including when the window covers every name in the list), assert `select_roll` terminates, returns exactly one element of the list, and completes within at most `1 + w` exclusion-relaxation steps (no unbounded retry loop)
 
-- [ ] 5. Update `bot.py` command handlers
+- [x] 5. Update `bot.py` command handlers
   - [x] 5.1 Update `cmd_add` handler for multi-name and validation
     - Split args on whitespace; each token is a separate restaurant name
     - For each name: reject if it contains `\n` or `/` (reply ADD_INVALID_NAME); lowercase for dedup check; check duplicate (reply ADD_DUPLICATE); append entry with original casing; save
@@ -149,7 +149,7 @@ Property numbers below match the Correctness Properties section of `design.md` (
     - Catch storage exceptions, log error, reply STORAGE_ERROR
     - _Requirements: 2a.1, 2a.2, 2a.3, 2a.4, 5.2, 6.1_
 
-  - [ ] 5.6 Update `cmd_roll` handler to use the No_Repeat_Window-aware selection logic
+  - [x] 5.6 Update `cmd_roll` handler to use the No_Repeat_Window-aware selection logic
     - Load list; guard empty (reply ROLL_EMPTY)
     - Load the chat's `Recent_Roll_History` via `storage.load_recent_rolls(chat_id)`
     - Select using `select_roll(restaurants, recent_history, config.NO_REPEAT_WINDOW)` (read the window from `config.NO_REPEAT_WINDOW` only)
@@ -180,8 +180,8 @@ Property numbers below match the Correctness Properties section of `design.md` (
 - [ ] 6. Checkpoint — ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 7. Wire everything together in `main.py`
-  - [ ] 7.1 Wire config → storage → bot handlers → `Application.run_polling()`
+- [x] 7. Wire everything together in `main.py`
+  - [x] 7.1 Wire config → storage → bot handlers → `Application.run_polling()`
     - Import `config`; register all command handlers and the `CallbackQueryHandler` for `cmd_removeall` on the `Application`
     - Load each chat's persisted `Recent_Roll_History` at startup so recent-repeat avoidance applies after a restart; treat a chat whose stored history cannot be read/parsed as empty and log the failure (Req 3a.13, 3a.17)
     - Configure `logging` to stdout so systemd/journald captures output
@@ -203,7 +203,7 @@ Property numbers below match the Correctness Properties section of `design.md` (
     - Include `[Install] WantedBy=multi-user.target` for auto-start on boot
     - _Requirements: 8.2, 8.3, 8.4, 8.5_
 
-- [ ] 9. Final checkpoint — ensure all tests pass
+- [x] 9. Final checkpoint — ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes

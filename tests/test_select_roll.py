@@ -1,14 +1,17 @@
 """
-Property tests for the pure ``select_roll`` helper in ``bot.py``.
+Tests for the pure ``select_roll`` helper in ``bot.py``.
 
-Covers the roll-selection correctness properties from the design document:
+These are the pre-existing selection tests, updated for the new
+``select_roll(restaurants, recent_history, no_repeat_window)`` signature and
+its window/relaxation semantics (see design.md). The full property suite for
+the new design (Properties 3–8) is implemented by dedicated test tasks; the
+tests here preserve the original coverage:
 
-  - Property 3: Uniform random selection            (Req 3.3)
-  - Property 4: Roll result is always from the list  (Req 3.1)
-  - Property 5: No-repeat avoids the previous result (Req 3a.3, 3a.4)
-  - Property 6: Full-list eligibility when no-repeat does not constrain
-                                                     (Req 3a.5, 3a.6, 3a.7)
-  - Property 9: Bounded selection                    (Req 3a.11)
+  - result is always a member of the list          (Req 3.1)
+  - uniform random selection with window 0         (Req 3.3, 3a.5)
+  - window 1 avoids the single most recent result  (Req 3a.6, 3a.9)
+  - full-list eligibility when unconstrained       (Req 3a.5, 3a.10, 3a.11)
+  - bounded selection                              (Req 3a.15)
 
 ``select_roll`` is a pure function (no Telegram or storage I/O), so it can be
 exercised directly. ``bot`` imports ``storage`` → ``config``, and ``config``
@@ -17,11 +20,11 @@ so the module loads cleanly. ``select_roll`` itself never touches config or
 storage at call time — it only uses ``random`` — so the dummy token does not
 affect any assertions below.
 
-Note: ``previous`` is the *lowercase* form of a restaurant name (or ``None``),
-matching how ``storage.save_previous_roll`` stores it. In the real system
-restaurant names are deduplicated case-insensitively (Req 1.5), so the
-generators below produce lists whose names are unique when lower-cased, and
-any "present" ``previous`` value is derived from an entry's name lower-cased.
+Note: ``recent_history`` holds *lowercase* result names, most recent last,
+matching how ``storage`` persists the Recent_Roll_History. Restaurant names
+are deduplicated case-insensitively (Req 1.5), so the generators below
+produce lists whose names are unique when lower-cased, and any "present"
+history entry is derived from an entry's name lower-cased.
 """
 import os
 import random
@@ -61,34 +64,34 @@ restaurants_strategy = st.lists(
 
 
 @st.composite
-def list_toggle_prev(draw):
-    """A list plus an arbitrary (toggle, previous) combination.
+def list_window_history(draw):
+    """A list plus an arbitrary (recent_history, no_repeat_window) combination.
 
-    ``previous`` is one of: ``None``, the lower-cased name of an entry that is
-    present in the list, or an arbitrary lower-cased string (which may or may
-    not coincide with a list name). ``no_repeat`` is an arbitrary boolean.
+    History entries are lowercase names that may be present in the list,
+    absent from it, or a mix; the window ranges from 0 to beyond the list
+    size and the history length.
     """
     restaurants = draw(restaurants_strategy)
     names_lower = [e["name"].lower() for e in restaurants]
-    previous = draw(
-        st.one_of(
-            st.none(),
-            st.sampled_from(names_lower),
-            name_strategy.map(str.lower),
+    history = draw(
+        st.lists(
+            st.one_of(st.sampled_from(names_lower), name_strategy.map(str.lower)),
+            min_size=0,
+            max_size=12,
         )
     )
-    no_repeat = draw(st.booleans())
-    return restaurants, previous, no_repeat
+    window = draw(st.integers(min_value=0, max_value=12))
+    return restaurants, history, window
 
 
 @st.composite
 def list_with_present_prev(draw):
-    """A list together with a ``previous`` that is present in the list.
+    """A multi-entry list together with a most-recent result present in it.
 
-    ``previous`` is the lower-cased name of one of the entries, mirroring how
-    a real ``Previous_Roll_Result`` would be stored.
+    The history's last entry is the lower-cased name of one of the entries,
+    mirroring how a real Recent_Roll_History would be stored.
     """
-    restaurants = draw(restaurants_strategy)
+    restaurants = draw(restaurants_strategy.filter(lambda r: len(r) >= 2))
     names_lower = [e["name"].lower() for e in restaurants]
     previous = draw(st.sampled_from(names_lower))
     return restaurants, previous
@@ -96,70 +99,68 @@ def list_with_present_prev(draw):
 
 @st.composite
 def unconstrained(draw):
-    """A list plus a (previous, no_repeat) combination where the no-repeat
-    exclusion does NOT apply: toggle disabled, OR previous is None, OR
-    previous is not present in the list."""
+    """A list plus (history, window) where the exclusion does NOT apply:
+    window 0, OR empty history, OR every effective-window name absent from
+    the list."""
     restaurants = draw(restaurants_strategy)
-    names_lower = [e["name"].lower() for e in restaurants]
-    scenario = draw(st.sampled_from(["toggle_off", "prev_none", "prev_absent"]))
+    names_lower = {e["name"].lower() for e in restaurants}
+    scenario = draw(st.sampled_from(["window_zero", "history_empty", "names_absent"]))
 
-    if scenario == "toggle_off":
-        no_repeat = False
-        previous = draw(
-            st.one_of(
-                st.none(),
-                st.sampled_from(names_lower),
-                name_strategy.map(str.lower),
+    if scenario == "window_zero":
+        window = 0
+        history = draw(
+            st.lists(name_strategy.map(str.lower), min_size=0, max_size=6)
+        )
+    elif scenario == "history_empty":
+        window = draw(st.integers(min_value=1, max_value=6))
+        history = []
+    else:  # names_absent — history entries are not present in the list
+        window = draw(st.integers(min_value=1, max_value=6))
+        history = draw(
+            st.lists(
+                name_strategy.map(str.lower).filter(lambda s: s not in names_lower),
+                min_size=1,
+                max_size=6,
             )
         )
-    elif scenario == "prev_none":
-        no_repeat = True
-        previous = None
-    else:  # prev_absent — previous is set but not present in the list
-        no_repeat = True
-        previous = draw(
-            name_strategy.map(str.lower).filter(lambda s: s not in names_lower)
-        )
 
-    return restaurants, previous, no_repeat
+    return restaurants, history, window
 
 
 # ---------------------------------------------------------------------------
-# Property 4: Roll result is always from the list
+# Result is always from the list
 # ---------------------------------------------------------------------------
 
-# Feature: telegram-lunch-bot, Property 4: Roll result is always from the list
-@given(list_toggle_prev())
+@given(list_window_history())
 @settings(max_examples=200)
-def test_property_4_result_always_from_list(data):
+def test_result_always_from_list(data):
     """
     **Validates: Requirements 3.1**
 
-    Property 4: For any non-empty list and any toggle/previous combination,
+    For any non-empty list and any history/window combination,
     ``select_roll`` returns a member of the list.
     """
-    restaurants, previous, no_repeat = data
-    result = bot.select_roll(restaurants, previous, no_repeat)
+    restaurants, history, window = data
+    result = bot.select_roll(restaurants, history, window)
     assert result in restaurants
 
 
 # ---------------------------------------------------------------------------
-# Property 3: Uniform random selection
+# Uniform random selection with window 0
 # ---------------------------------------------------------------------------
 
-# Feature: telegram-lunch-bot, Property 3: Uniform random selection
 @given(
     k=st.integers(min_value=2, max_value=6),
     seed=st.integers(min_value=0, max_value=2**32 - 1),
 )
 @settings(max_examples=100, deadline=None)
-def test_property_3_uniform_selection(k, seed):
+def test_uniform_selection_window_zero(k, seed):
     """
-    **Validates: Requirements 3.3**
+    **Validates: Requirements 3.3, 3a.5**
 
-    Property 3: With the No_Repeat_Toggle disabled, over a large number of
-    rolls on a list of ``k`` items each item appears with frequency
-    approximately ``1/k`` (within tolerance).
+    With a No_Repeat_Window of 0, over a large number of rolls on a list of
+    ``k`` items each item appears with frequency approximately ``1/k``
+    (within tolerance).
     """
     restaurants = [_entry(f"r{i}") for i in range(k)]
     n_rolls = 3000
@@ -167,7 +168,7 @@ def test_property_3_uniform_selection(k, seed):
     random.seed(seed)
     counts = {e["name"]: 0 for e in restaurants}
     for _ in range(n_rolls):
-        pick = bot.select_roll(restaurants, previous=None, no_repeat=False)
+        pick = bot.select_roll(restaurants, [], 0)
         counts[pick["name"]] += 1
 
     expected = n_rolls / k
@@ -180,51 +181,60 @@ def test_property_3_uniform_selection(k, seed):
 
 
 # ---------------------------------------------------------------------------
-# Property 5: No-repeat avoids the previous result
+# Window 1 avoids the single most recent result
 # ---------------------------------------------------------------------------
 
-# Feature: telegram-lunch-bot, Property 5: No-repeat avoids the previous result
 @given(list_with_present_prev())
 @settings(max_examples=200)
-def test_property_5_no_repeat_avoids_previous(data):
+def test_window_one_avoids_previous(data):
     """
-    **Validates: Requirements 3a.3, 3a.4**
+    **Validates: Requirements 3a.6, 3a.9**
 
-    Property 5: With the No_Repeat_Toggle enabled and ``previous`` present in
-    the list: if the list has two or more entries the result is in the list
-    and not equal to ``previous``; if the list has exactly one entry that
-    single entry is returned (graceful degradation).
+    With a No_Repeat_Window of 1 and the most recent result present in a
+    list of two or more entries, the result is in the list and not equal to
+    that most recent result. A single-restaurant list always returns its
+    only entry.
     """
     restaurants, previous = data
-    result = bot.select_roll(restaurants, previous, no_repeat=True)
+    result = bot.select_roll(restaurants, [previous], 1)
 
-    if len(restaurants) >= 2:
-        assert result in restaurants
-        assert result["name"].lower() != previous
-    else:
-        assert result == restaurants[0]
+    assert result in restaurants
+    assert result["name"].lower() != previous
+
+
+@given(name_strategy, st.integers(min_value=1, max_value=6))
+@settings(max_examples=100)
+def test_single_restaurant_always_returned(name, window):
+    """
+    **Validates: Requirements 3a.9**
+
+    With a No_Repeat_Window of 1 or greater, a single-restaurant list always
+    returns that restaurant, even when its name fills the recent history.
+    """
+    restaurants = [_entry(name)]
+    history = [name.lower()] * window
+    assert bot.select_roll(restaurants, history, window) == restaurants[0]
 
 
 # ---------------------------------------------------------------------------
-# Property 6: Full-list eligibility when no-repeat does not constrain
+# Full-list eligibility when the window does not constrain
 # ---------------------------------------------------------------------------
 
-# Feature: telegram-lunch-bot, Property 6: Full-list eligibility when no-repeat does not constrain
 @given(data=unconstrained(), seed=st.integers(min_value=0, max_value=2**32 - 1))
 @settings(max_examples=150, deadline=None)
-def test_property_6_full_list_eligibility(data, seed):
+def test_full_list_eligibility(data, seed):
     """
-    **Validates: Requirements 3a.5, 3a.6, 3a.7**
+    **Validates: Requirements 3a.5, 3a.10, 3a.11**
 
-    Property 6: When the no-repeat exclusion does not apply (toggle disabled,
-    OR previous is None, OR previous not in the list), the result comes from
-    the entire list and, over many rolls, every element is reachable.
+    When the exclusion does not apply (window 0, OR empty history, OR every
+    history name absent from the list), the result comes from the entire
+    list and, over many rolls, every element is reachable.
     """
-    restaurants, previous, no_repeat = data
+    restaurants, history, window = data
     names = {e["name"] for e in restaurants}
 
     # Single roll: result is from the entire list.
-    single = bot.select_roll(restaurants, previous, no_repeat)
+    single = bot.select_roll(restaurants, history, window)
     assert single in restaurants
 
     # Many rolls: every element of the list is reachable.
@@ -232,7 +242,7 @@ def test_property_6_full_list_eligibility(data, seed):
     seen = set()
     n_rolls = 100 * len(restaurants)
     for _ in range(n_rolls):
-        pick = bot.select_roll(restaurants, previous, no_repeat)
+        pick = bot.select_roll(restaurants, history, window)
         assert pick in restaurants
         seen.add(pick["name"])
 
@@ -240,23 +250,21 @@ def test_property_6_full_list_eligibility(data, seed):
 
 
 # ---------------------------------------------------------------------------
-# Property 9: Bounded selection
+# Bounded selection
 # ---------------------------------------------------------------------------
 
-# Feature: telegram-lunch-bot, Property 9: Bounded selection
-@given(list_toggle_prev())
+@given(list_window_history())
 @settings(max_examples=200)
-def test_property_9_bounded_selection(data):
+def test_bounded_selection(data):
     """
-    **Validates: Requirements 3a.11**
+    **Validates: Requirements 3a.15**
 
-    Property 9: For any non-empty list and any toggle/previous combination,
-    the candidate set is non-empty and ``select_roll`` returns exactly one
-    element of the list (no looping or indefinite retry — the call simply
-    returns a single entry).
+    For any non-empty list and any history/window combination (including a
+    window that covers every name in the list), ``select_roll`` terminates
+    and returns exactly one element of the list — no unbounded retry loop.
     """
-    restaurants, previous, no_repeat = data
-    result = bot.select_roll(restaurants, previous, no_repeat)
+    restaurants, history, window = data
+    result = bot.select_roll(restaurants, history, window)
 
     # Exactly one entry is returned, and it is a member of the list (a
     # non-empty candidate set is implied by a successful single return).
